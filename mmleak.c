@@ -101,13 +101,15 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 	PTHREAD_RWLOCK_UNLOCK(&lock);
 }
 
-/* For allocations that need before we get function pointers */
-static char my_buffer[1024 * 1024];
+/* For allocations that may need before we get function pointers */
+static char my_buffer[1024 * 1024] __attribute__((aligned(8)));
 void *my_malloc(size_t len)
 {
 	static char *next_alloc = my_buffer;
 	char *ret;
 
+	/* mallocs should be on 8 byte boundary */
+	len = ((len+7)/8) * 8;
 	ret = next_alloc;
 	next_alloc += len;
 
