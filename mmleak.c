@@ -41,10 +41,7 @@ static void __attribute__((constructor)) init(void)
 }
 
 #define OP_MALLOC  1
-#define OP_CALLOC  2
-#define OP_REALLOC 3
-#define OP_ALIGN   4
-#define OP_FREE    5
+#define OP_FREE    2
 
 #define PTHREAD_RWLOCK_WRLOCK(x) \
 	do { \
@@ -92,40 +89,42 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 	 */
 	PTHREAD_RWLOCK_RDLOCK(&lock);
 	switch (op) {
+	case OP_MALLOC:
+		fprintf(logfp, "%p %p %zu\n", ptr, caller, len);
+		break;
 	case OP_FREE:
 		fprintf(logfp, "%p %p\n", ptr, caller);
 		break;
-	case OP_MALLOC:
-	case OP_CALLOC:
-		fprintf(logfp, "%p %p %zu\n", ptr, caller, len);
-		break;
 	default:
-		fprintf(logfp, "bogus op_code:%d", op);
+		abort();
 	}
 	PTHREAD_RWLOCK_UNLOCK(&lock);
 }
 
-/* For allocation that need before DL open stuff?? */
-static char my_buffer[16 * 1024 * 1024];
-void *my_calloc(size_t n, size_t len)
+/* For allocations that need before we get function pointers */
+static char my_buffer[1024 * 1024];
+void *my_malloc(size_t len)
 {
-	static char *free_ptr = my_buffer;
+	static char *next_alloc = my_buffer;
 	char *ret;
 
-	ret = free_ptr;
-	free_ptr = free_ptr + n * len;
+	ret = next_alloc;
+	next_alloc += len;
 
-	if (free_ptr > my_buffer + sizeof(my_buffer)) {
+	if (next_alloc > my_buffer + sizeof(my_buffer)) {
 		abort();
 	}
 
-	/* Buffer is already initialized */
-	return ret;
+	return (void *)ret;
 }
 
-void *my_malloc(size_t len)
+void *my_calloc(size_t n, size_t len)
 {
-	return my_calloc(1, len);
+	void *ret;
+
+	ret = my_malloc(n * len);
+	memset(ret, 0, n * len);
+	return ret;
 }
 
 void my_free(void *ptr)
@@ -169,6 +168,25 @@ void *calloc(size_t n, size_t len)
 	caller = RETURN_ADDRESS(0);
 	ret = (*callocp)(n, len);
 	Log(OP_MALLOC, ret, caller, n * len);
+	no_hook = 0;
+
+	return ret;
+}
+
+void *realloc(void *old, size_t len)
+{
+	void *ret;
+	void *caller;
+
+	/* Probably no_hook check is not needed for realloc */
+	if (no_hook)
+		return (*reallocp)(old, len);
+
+	no_hook = 1;
+	caller = RETURN_ADDRESS(0);
+	Log(OP_FREE, old, caller, 0);
+	ret = (*reallocp)(old, len);
+	Log(OP_MALLOC, ret, caller, len);
 	no_hook = 0;
 
 	return ret;
