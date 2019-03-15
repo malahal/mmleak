@@ -28,16 +28,20 @@ static inline int64_t atomic_dec_int64_t(int64_t *var)
 void * (*mallocp)(size_t);
 void * (*callocp)(size_t, size_t);
 void * (*reallocp)(void *, size_t);
-void * (*memalignp)(size_t, size_t);
+int    (*posix_memalignp)(void **, size_t, size_t);
+void * (*aligned_allocp)(size_t, size_t);
 void   (*freep)(void *);
 
 static void __attribute__((constructor)) init(void)
 {
-	mallocp = (void *(*) (size_t)) dlsym (RTLD_NEXT, "malloc");
-	reallocp = (void *(*) (void *, size_t)) dlsym (RTLD_NEXT, "realloc");
-	memalignp = (void *(*)(size_t, size_t)) dlsym (RTLD_NEXT, "memalign");
-	freep = (void (*) (void *)) dlsym (RTLD_NEXT, "free");
-	callocp = (void *(*) (size_t, size_t)) dlsym (RTLD_NEXT, "calloc");
+	mallocp = (void *(*)(size_t))dlsym(RTLD_NEXT, "malloc");
+	callocp = (void *(*)(size_t, size_t)) dlsym (RTLD_NEXT, "calloc");
+	reallocp = (void *(*)(void *, size_t))dlsym(RTLD_NEXT, "realloc");
+	posix_memalignp = (int (*)(void **, size_t, size_t))
+				dlsym(RTLD_NEXT, "posix_memalign");
+	aligned_allocp = (void *(*)(size_t, size_t))
+				dlsym(RTLD_NEXT, "aligned_alloc");
+	freep = (void (*)(void *))dlsym(RTLD_NEXT, "free");
 }
 
 #define OP_MALLOC  1
@@ -189,6 +193,41 @@ void *realloc(void *old, size_t len)
 	Log(OP_FREE, old, caller, 0);
 	ret = (*reallocp)(old, len);
 	Log(OP_MALLOC, ret, caller, len);
+	no_hook = 0;
+
+	return ret;
+}
+
+int posix_memalign(void **memptr, size_t alignment, size_t size)
+{
+	int ret;
+	void *caller;
+
+	if (no_hook)
+		return (*posix_memalignp)(memptr, alignment, size);
+
+	no_hook = 1;
+	caller = RETURN_ADDRESS(0);
+	ret = (*posix_memalignp)(memptr, alignment, size);
+	if (ret == 0)
+		Log(OP_MALLOC, *memptr, caller, size);
+	no_hook = 0;
+
+	return ret;
+}
+
+void *aligned_alloc(size_t alignment, size_t size)
+{
+	void *ret;
+	void *caller;
+
+	if (no_hook)
+		return (*aligned_allocp)(alignment, size);
+
+	no_hook = 1;
+	caller = RETURN_ADDRESS(0);
+	ret = (*aligned_allocp)(alignment, size);
+	Log(OP_MALLOC, ret, caller, size);
 	no_hook = 0;
 
 	return ret;
