@@ -38,15 +38,18 @@ def shrink(infile, outfile):
     peekf = peek_ahead(infile)
     for line in peekf:
         fields = line.split()
-        ptr = fields[0]
-        func = fields[1]
+        try:
+            ptr = fields[0]
+            func = fields[1]
+        except:
+            sys.exit("BAD line: %s" % line)
 
         # If this is an allocation and the next is a free with the same ptr,
         # skip this allocation and the following free.
         if len(fields) == 3:
             size = fields[2]
             pline = peekf.preview
-            if pline:
+            if pline is not peekf.sentinel:
                 fields = pline.split()
                 if len(fields) == 2 and ptr == fields[0]:
                     # drop this line and the matching preview free line
@@ -54,5 +57,5 @@ def shrink(infile, outfile):
                     continue
         outfile.write(line)
 
-if __name__ is "__main__":
+if __name__ == "__main__":
     main()

@@ -190,7 +190,8 @@ void *realloc(void *old, size_t len)
 
 	no_hook = 1;
 	caller = RETURN_ADDRESS(0);
-	Log(OP_FREE, old, caller, 0);
+	if (old)
+		Log(OP_FREE, old, caller, 0);
 	ret = (*reallocp)(old, len);
 	Log(OP_MALLOC, ret, caller, len);
 	no_hook = 0;
