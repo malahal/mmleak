@@ -1,0 +1,8 @@
+mtrace function and mtrace perl tool ("man 3 mtrace") shipped with glibc
+is useful only with single threaded programs. The hook is removed while
+logging an alloc/free message. Any allocations/frees in this time window
+will not have the hook, so they will not be logged!
+
+Developed a shared library that replaces malloc, free and friends
+symbols and logs alloc/free messages to a file that are safe with
+threaded programs.

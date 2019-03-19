@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 
 # This script takes a sorted mmleak.so produced dump file.  For example
-# with using 'sort -s -k1,1'. It removes matching allocs and free
-# records. Unmatched records are written to stdout.
+# the file produced with 'sort -s -k1,1 mmleak.<PID>.<NUM>.out'.  It
+# removes the matching adjacent alloc and free records.  Unmatched
+# records are written to stdout.
 
 import sys
 
