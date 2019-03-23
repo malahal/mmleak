@@ -44,8 +44,8 @@ static void __attribute__((constructor)) init(void)
 	freep = (void (*)(void *))dlsym(RTLD_NEXT, "free");
 }
 
-#define OP_MALLOC  1
-#define OP_FREE    2
+#define OP_ALLOC 1
+#define OP_FREE  2
 
 #define PTHREAD_RWLOCK_WRLOCK(x) \
 	do { \
@@ -93,7 +93,7 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 	 */
 	PTHREAD_RWLOCK_RDLOCK(&lock);
 	switch (op) {
-	case OP_MALLOC:
+	case OP_ALLOC:
 		fprintf(logfp, "%p %p %zu\n", ptr, caller, len);
 		break;
 	case OP_FREE:
@@ -105,23 +105,23 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 	PTHREAD_RWLOCK_UNLOCK(&lock);
 }
 
-/* For allocations that may need before we get function pointers */
+/* For allocations that are needed before we get function pointers */
 static char my_buffer[1024 * 1024] __attribute__((aligned(8)));
 void *my_malloc(size_t len)
 {
 	static char *next_alloc = my_buffer;
-	char *ret;
+	void *ret;
 
 	/* mallocs should be on 8 byte boundary */
 	len = ((len+7)/8) * 8;
-	ret = next_alloc;
+	ret = (void *)next_alloc;
 	next_alloc += len;
 
 	if (next_alloc > my_buffer + sizeof(my_buffer)) {
 		abort();
 	}
 
-	return (void *)ret;
+	return ret;
 }
 
 void *my_calloc(size_t n, size_t len)
@@ -153,7 +153,7 @@ void *malloc (size_t len)
 	no_hook = 1;
 	caller = RETURN_ADDRESS(0);
 	ret = (*mallocp)(len);
-	Log(OP_MALLOC, ret, caller, len);
+	Log(OP_ALLOC, ret, caller, len);
 	no_hook = 0;
 
 	return ret;
@@ -173,7 +173,7 @@ void *calloc(size_t n, size_t len)
 	no_hook = 1;
 	caller = RETURN_ADDRESS(0);
 	ret = (*callocp)(n, len);
-	Log(OP_MALLOC, ret, caller, n * len);
+	Log(OP_ALLOC, ret, caller, n * len);
 	no_hook = 0;
 
 	return ret;
@@ -193,7 +193,7 @@ void *realloc(void *old, size_t len)
 	if (old)
 		Log(OP_FREE, old, caller, 0);
 	ret = (*reallocp)(old, len);
-	Log(OP_MALLOC, ret, caller, len);
+	Log(OP_ALLOC, ret, caller, len);
 	no_hook = 0;
 
 	return ret;
@@ -211,7 +211,7 @@ int posix_memalign(void **memptr, size_t alignment, size_t size)
 	caller = RETURN_ADDRESS(0);
 	ret = (*posix_memalignp)(memptr, alignment, size);
 	if (ret == 0)
-		Log(OP_MALLOC, *memptr, caller, size);
+		Log(OP_ALLOC, *memptr, caller, size);
 	no_hook = 0;
 
 	return ret;
@@ -228,12 +228,13 @@ void *aligned_alloc(size_t alignment, size_t size)
 	no_hook = 1;
 	caller = RETURN_ADDRESS(0);
 	ret = (*aligned_allocp)(alignment, size);
-	Log(OP_MALLOC, ret, caller, size);
+	Log(OP_ALLOC, ret, caller, size);
 	no_hook = 0;
 
 	return ret;
 }
 
+/* Check if the given ptr falls into my_buffer memory */
 #define my_buffer(ptr) ((ptr) >= (void *)my_buffer \
 		&& (ptr) < (void *)(my_buffer + sizeof(my_buffer)))
 void free(void *ptr)
@@ -243,7 +244,6 @@ void free(void *ptr)
 	if (ptr == NULL)
 		return;
 
-	/* Don't free our static buffer */
 	if (my_buffer(ptr)) {
 		my_free(ptr);
 		return;
@@ -259,4 +259,38 @@ void free(void *ptr)
 	Log(OP_FREE, ptr, caller, 0);
 	(*freep)(ptr);
 	no_hook = 0;
+}
+
+char *strdup(const char *s)
+{
+	void *ret;
+	void *caller;
+	size_t size;
+	
+	no_hook = 1;
+	size = strlen(s) + 1;
+	caller = RETURN_ADDRESS(0);
+	ret = (*mallocp)(size);
+	Log(OP_ALLOC, ret, caller, size);
+	memcpy(ret, s, size);
+	no_hook = 0;
+
+	return ret;
+}
+
+char *strndup(const char *s, size_t n)
+{
+	void *ret;
+	void *caller;
+	size_t size;
+	
+	no_hook = 1;
+	size = strnlen(s, n) + 1;
+	caller = RETURN_ADDRESS(0);
+	ret = (*mallocp)(size);
+	Log(OP_ALLOC, ret, caller, size);
+	memcpy(ret, s, size);
+	no_hook = 0;
+
+	return ret;
 }
