@@ -6,3 +6,30 @@ will not have the hook, so they will not be logged!
 Developed a shared library that replaces malloc, free and friends
 symbols and logs alloc/free messages to a file that are safe with
 threaded programs.
+
+Steps to track memory leak:
+===========================
+
+#1. Get the source
+#2. Run "make"
+#3. Put the above generated "mmleak.so" file at /root
+#4. Use "LD_PRELOAD=/root/mmleak.so <your-program> [program-options]"
+#5. mmleak.so will generate dump files into /tmp with /tmp/mmleak.<PID>.<NUM>
+#6. Save "cat /proc/<PID-of-your-program/maps, will be used in hex to source line mapping.
+
+#7. The files generated will be big as it dumps all allocations and frees. Use the provided mmleak.py to shrink the matching allocations and frees with:
+    - make sure that the dump file is not written by the mmleak.so anymore.
+      It only writes to the last numbered file!
+    - sort -s -k1,1 <dump-file> -o <dump-file>.sorted
+    - cat <dump-file>.sorted | ./mmleak.py > <dump-file>.shrinked
+      {can be run in parallel if you have lots of dump files.
+      Don't run on the last NUMBERED file though.}
+
+    - Once you want to examine the leak, then::
+
+       cat <generated shrinked files in order> | sort -s -k1,1 -o mmleak.final
+
+    d) You can mmleak.final through mmleak-panda script to get an HTML output.
+
+    All function addresses will be in hex. Use "eu-addr2line" to get the leak line numbers.
+
