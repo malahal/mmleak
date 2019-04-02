@@ -29,7 +29,7 @@ Steps to track memory leak:
 
        cat <generated shrinked files in order> | sort -s -k1,1 -o mmleak.final
 
-    d) You can mmleak.final through mmleak-panda script to get an HTML output.
+    d) You can feed mmleak.final through mmleak-panda script to get an HTML output.
 
     All function addresses will be in hex. Use "eu-addr2line" to get the leak line numbers.
 
