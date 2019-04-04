@@ -9,6 +9,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <syslog.h>
+#include <errno.h>
 
 /* GCC version 40700 supports atomic functions. Check compiler
  * version and #error if needed, later
@@ -25,12 +27,14 @@ static inline int64_t atomic_dec_int64_t(int64_t *var)
 #define RETURN_ADDRESS(nr) \
 	__builtin_extract_return_addr(__builtin_return_address (nr))
 
-void * (*mallocp)(size_t);
-void * (*callocp)(size_t, size_t);
-void * (*reallocp)(void *, size_t);
-int    (*posix_memalignp)(void **, size_t, size_t);
-void * (*aligned_allocp)(size_t, size_t);
-void   (*freep)(void *);
+static void * (*mallocp)(size_t);
+static void * (*callocp)(size_t, size_t);
+static void * (*reallocp)(void *, size_t);
+static int    (*posix_memalignp)(void **, size_t, size_t);
+static void * (*aligned_allocp)(size_t, size_t);
+static void   (*freep)(void *);
+
+static char *mmleak_dir;
 
 static void __attribute__((constructor)) init(void)
 {
@@ -42,6 +46,10 @@ static void __attribute__((constructor)) init(void)
 	aligned_allocp = (void *(*)(size_t, size_t))
 				dlsym(RTLD_NEXT, "aligned_alloc");
 	freep = (void (*)(void *))dlsym(RTLD_NEXT, "free");
+
+	mmleak_dir = getenv("MMLEAK_DIR");
+	if (mmleak_dir == NULL)
+		mmleak_dir = "/tmp";
 }
 
 #define OP_ALLOC 1
@@ -66,30 +74,67 @@ static void __attribute__((constructor)) init(void)
 static void Log(int op, void *ptr, void *caller, size_t len)
 {
 	static FILE *logfp = NULL;
-	static const int64_t max_recs = 100 * 1024 * 1024; /* TODO: from env */
+	static const int64_t max_recs = 100 * 1024 * 1024;
 	static int64_t nrecs = 0; /* current record number in the file */
 	static int file_num = 0; /* current file numebr */
 	static pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
-	char filename[1024]; /* PATH_MAX ? */
+
+	char logfile[1024];
+	char mapsfile[1024];
+	int c;
 
 	if (atomic_inc_int64_t(&nrecs) % max_recs == 1) {
 		PTHREAD_RWLOCK_WRLOCK(&lock);
 		if (logfp)
 			fclose(logfp);
-		snprintf(filename, sizeof(filename),
-			 "/tmp/mmleak.%d.%d.out", getpid(), file_num);
-		logfp = fopen(filename, "a");
+
+		snprintf(logfile, sizeof(logfile), "%s/mmleak.%d.%d.out",
+			 mmleak_dir, getpid(), file_num);
+		logfp = fopen(logfile, "a");
+		if (logfp == NULL)
+			syslog(LOG_DAEMON|LOG_ERR,
+			       "open of logfile %s failed, errno:%d\n",
+			       logfile, errno);
 		file_num++;
+
+		snprintf(mapsfile, sizeof(mapsfile),
+			 "%s/mmleak.%d.maps", mmleak_dir, getpid());
+		if (access(mapsfile, F_OK) == -1) {
+			FILE *inf, *outf;
+
+			outf = fopen(mapsfile, "w");
+			if (outf == NULL) {
+				syslog(LOG_DAEMON|LOG_ERR,
+				       "open of %s failed, errno:%d",
+				       mapsfile, errno);	
+			}
+
+			snprintf(mapsfile, sizeof(mapsfile),
+				 "/proc/%d/maps", getpid());
+			inf = fopen(mapsfile, "r");
+			if (inf == NULL) {
+				syslog(LOG_DAEMON|LOG_ERR,
+				       "open of %s failed, errno:%d",
+				       mapsfile, errno);	
+			}
+
+			if (inf && outf) {
+				while ((c = fgetc(inf)) != EOF)
+					fputc(c, outf);
+			}
+			if (inf != NULL)
+				fclose(inf);
+			if (outf != NULL)
+				fclose(outf);
+		}
 		PTHREAD_RWLOCK_UNLOCK(&lock);
 	}
 
+	if (logfp == NULL) /* unlikely for this to happen */
+		return;
+
 	/* fprintf is thread safe, so no need for any lock.  This shared
-	 * lock is needed to avoid threads writing to a closed logfp
-	 *
-	 * logfp shouldn't be NULL here unless multiple threads call us
-	 * at the very first time. We could just check and go back to
-	 * the beginning of this function, if so. Since that is
-	 * unlikely, we are not doing it.
+	 * lock is needed here to avoid threads writing to a closed logfp!
 	 */
 	PTHREAD_RWLOCK_RDLOCK(&lock);
 	switch (op) {
@@ -107,7 +152,7 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 
 /* For allocations that are needed before we get function pointers */
 static char my_buffer[1024 * 1024] __attribute__((aligned(8)));
-void *my_malloc(size_t len)
+static void *my_malloc(size_t len)
 {
 	static char *next_alloc = my_buffer;
 	void *ret;
@@ -124,7 +169,7 @@ void *my_malloc(size_t len)
 	return ret;
 }
 
-void *my_calloc(size_t n, size_t len)
+static void *my_calloc(size_t n, size_t len)
 {
 	void *ret;
 
@@ -133,12 +178,8 @@ void *my_calloc(size_t n, size_t len)
 	return ret;
 }
 
-void my_free(void *ptr)
-{
-	return;
-}
-
 static __thread int no_hook;
+
 void *malloc (size_t len)
 {
 	void *ret;
@@ -184,13 +225,12 @@ void *realloc(void *old, size_t len)
 	void *ret;
 	void *caller;
 
-	/* Probably no_hook check is not needed for realloc */
 	if (no_hook)
 		return (*reallocp)(old, len);
 
 	no_hook = 1;
 	caller = RETURN_ADDRESS(0);
-	if (old)
+	if (old != NULL)
 		Log(OP_FREE, old, caller, 0);
 	ret = (*reallocp)(old, len);
 	Log(OP_ALLOC, ret, caller, len);
@@ -245,7 +285,6 @@ void free(void *ptr)
 		return;
 
 	if (my_buffer(ptr)) {
-		my_free(ptr);
 		return;
 	}
 
