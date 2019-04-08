@@ -35,6 +35,7 @@ static void * (*aligned_allocp)(size_t, size_t);
 static void   (*freep)(void *);
 
 static char *mmleak_dir;
+static char logfile[1024];
 
 static void __attribute__((constructor)) init(void)
 {
@@ -50,6 +51,8 @@ static void __attribute__((constructor)) init(void)
 	mmleak_dir = getenv("MMLEAK_DIR");
 	if (mmleak_dir == NULL)
 		mmleak_dir = "/tmp";
+	snprintf(logfile, sizeof(logfile),
+		 "%s/mmleak.out", mmleak_dir);
 }
 
 #define OP_ALLOC 1
@@ -78,44 +81,49 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 	static int64_t nrecs = 0; /* current record number in the file */
 	static int file_num = 0; /* current file numebr */
 	static pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
-
-	char logfile[1024];
-	char mapsfile[1024];
+	char fname[1024];
 	int c;
 
 	if (atomic_inc_int64_t(&nrecs) % max_recs == 1) {
 		PTHREAD_RWLOCK_WRLOCK(&lock);
-		if (logfp)
+		if (logfp) {
 			fclose(logfp);
+			snprintf(fname, sizeof(fname), "%s/mmleak.%d.%d.out",
+				 mmleak_dir, getpid(), file_num);
+			file_num++;
+			if (rename(logfile, fname)) {
+				syslog(LOG_DAEMON|LOG_ERR,
+				       "rename of %s to %s failed, errno:%d\n",
+				       logfile, fname, errno);
+			}
+		}
 
-		snprintf(logfile, sizeof(logfile), "%s/mmleak.%d.%d.out",
-			 mmleak_dir, getpid(), file_num);
-		logfp = fopen(logfile, "a");
-		if (logfp == NULL)
+		logfp = fopen(logfile, "w");
+		if (logfp == NULL) {
 			syslog(LOG_DAEMON|LOG_ERR,
 			       "open of logfile %s failed, errno:%d\n",
 			       logfile, errno);
-		file_num++;
+		}
 
-		snprintf(mapsfile, sizeof(mapsfile),
+		snprintf(fname, sizeof(fname),
 			 "%s/mmleak.%d.maps", mmleak_dir, getpid());
-		if (access(mapsfile, F_OK) == -1) {
+		if (access(fname, F_OK) == -1) {
 			FILE *inf, *outf;
 
-			outf = fopen(mapsfile, "w");
+			outf = fopen(fname, "w");
 			if (outf == NULL) {
 				syslog(LOG_DAEMON|LOG_ERR,
 				       "open of %s failed, errno:%d",
-				       mapsfile, errno);	
+				       fname, errno);	
 			}
 
-			snprintf(mapsfile, sizeof(mapsfile),
+			snprintf(fname, sizeof(fname),
 				 "/proc/%d/maps", getpid());
-			inf = fopen(mapsfile, "r");
+			inf = fopen(fname, "r");
 			if (inf == NULL) {
 				syslog(LOG_DAEMON|LOG_ERR,
 				       "open of %s failed, errno:%d",
-				       mapsfile, errno);	
+				       fname, errno);	
 			}
 
 			if (inf && outf) {
@@ -130,7 +138,12 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 		PTHREAD_RWLOCK_UNLOCK(&lock);
 	}
 
-	if (logfp == NULL) /* unlikely for this to happen */
+	/* If multiple threads call this function at the same time for
+	 * the first time, logfile may not have been opened! Unlikely to
+	 * happen though!  Will happens after a failure like ENOSPC as
+	 * well!
+	 */
+	if (logfp == NULL)
 		return;
 
 	/* fprintf is thread safe, so no need for any lock.  This shared
