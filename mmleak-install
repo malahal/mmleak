@@ -1,23 +1,26 @@
 #!/usr/bin/env python
 
+# This script should be run from a directory where mmleak.so library is
+# present. It copies the library to /root and modifies nfs-ganesha
+# systemd unit servce file to preload the library to track memory
+# allocations and frees.  It configures the library to dump malloc/free
+# traces into the given directory.
+
 import sys, re
 import os, os.path
 import shutil
 import subprocess
 
 def main():
-    # Ask for MMLEAK_DIR
-    try:
-        input = raw_input
-    except NameError:
-        pass
+    if len(sys.argv) != 2:
+        sys.exit("\tusage: %s <dump-directory>" % sys.argv[0])
 
-    mmleak_dir = input("Specify a directory for mmleak to store all its dumps: ")
+    mmleak_dir = sys.argv[1]
     if not os.path.isdir(mmleak_dir):
-        sys.exit("%s is not a directory!" % mmleak_dir)
+        sys.exit("%s is not a directory, exiting!" % mmleak_dir)
 
     if not os.path.isfile("mmleak.so"):
-        sys.exit("mmleak.so file not found in the current working directory")
+        sys.exit("mmleak.so file not found in cwd, exiting!")
 
     # /root is always expected to be there!
     if not shutil._samefile("mmleak.so", "/root/mmleak.so"):
