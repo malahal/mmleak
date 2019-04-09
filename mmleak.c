@@ -1,5 +1,14 @@
 /*
- * Based on https://elinux.org/images/b/b5/Elc2013_Kobayashi.pdf
+ * A shared library that logs allocations and frees like mtrace() (see
+ * man 3 mtrace for details) but works with multi-threaded applications
+ * unlike mtrace().  Losely based on
+ * https://elinux.org/images/b/b5/Elc2013_Kobayashi.pdf
+ *
+ * Generates dumps into given locations with sequential numbered dump
+ * files with PID in them.
+ *
+ * There is an mmleak.py script that shrinks the dump files by removing
+ * matching allocations and frees. See README.rst for more details.
  */
 #define _GNU_SOURCE
 #include <stdlib.h>
