@@ -83,28 +83,72 @@ static void __attribute__((constructor)) init(void)
 			abort(); \
 	} while (0)
 
+/* caller should serialize this function */
+static void save_maps_file()
+{
+	char fname[1024];
+	FILE *inf;
+	FILE *outf;
+	int c;
+
+	snprintf(fname, sizeof(fname), "%s/mmleak.%d.maps",
+		 mmleak_dir, getpid());
+
+	if (access(fname, F_OK) != -1) /* File already exists */
+		return;
+
+	outf = fopen(fname, "w");
+	if (outf == NULL) {
+		syslog(LOG_DAEMON|LOG_ERR, "open of %s failed, errno:%d",
+		       fname, errno);
+		return;
+	}
+
+	snprintf(fname, sizeof(fname), "/proc/%d/maps", getpid());
+	inf = fopen(fname, "r");
+	if (inf == NULL) {
+		syslog(LOG_DAEMON|LOG_ERR, "open of %s failed, errno:%d",
+		       fname, errno);
+		fclose(outf);
+		return;
+	}
+
+	while ((c = fgetc(inf)) != EOF)
+		fputc(c, outf);
+	fclose(inf);
+	fclose(outf);
+}
+
+/* caller should serialize this function */
+static void rename_dump_file()
+{
+	static int file_num = 0; /* current file numebr */
+	char fname[1024];
+
+	snprintf(fname, sizeof(fname), "%s/mmleak.%d.%d.out",
+		 mmleak_dir, getpid(), file_num);
+	file_num++;
+
+	if (rename(logfile, fname)) {
+		syslog(LOG_DAEMON|LOG_ERR,
+		       "rename of %s to %s failed, errno:%d\n",
+		       logfile, fname, errno);
+	}
+}
+
 static void Log(int op, void *ptr, void *caller, size_t len)
 {
 	static FILE *logfp = NULL;
 	static const int64_t max_recs = 100 * 1024 * 1024;
 	static int64_t nrecs = 0; /* current record number in the file */
-	static int file_num = 0; /* current file numebr */
 	static pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
-	char fname[1024];
-	int c;
 
 	if (atomic_inc_int64_t(&nrecs) % max_recs == 1) {
 		PTHREAD_RWLOCK_WRLOCK(&lock);
 		if (logfp) {
 			fclose(logfp);
-			snprintf(fname, sizeof(fname), "%s/mmleak.%d.%d.out",
-				 mmleak_dir, getpid(), file_num);
-			file_num++;
-			if (rename(logfile, fname)) {
-				syslog(LOG_DAEMON|LOG_ERR,
-				       "rename of %s to %s failed, errno:%d\n",
-				       logfile, fname, errno);
-			}
+			rename_dump_file();
+			save_maps_file();
 		}
 
 		logfp = fopen(logfile, "w");
@@ -112,37 +156,6 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 			syslog(LOG_DAEMON|LOG_ERR,
 			       "open of logfile %s failed, errno:%d\n",
 			       logfile, errno);
-		}
-
-		snprintf(fname, sizeof(fname),
-			 "%s/mmleak.%d.maps", mmleak_dir, getpid());
-		if (access(fname, F_OK) == -1) {
-			FILE *inf, *outf;
-
-			outf = fopen(fname, "w");
-			if (outf == NULL) {
-				syslog(LOG_DAEMON|LOG_ERR,
-				       "open of %s failed, errno:%d",
-				       fname, errno);	
-			}
-
-			snprintf(fname, sizeof(fname),
-				 "/proc/%d/maps", getpid());
-			inf = fopen(fname, "r");
-			if (inf == NULL) {
-				syslog(LOG_DAEMON|LOG_ERR,
-				       "open of %s failed, errno:%d",
-				       fname, errno);	
-			}
-
-			if (inf && outf) {
-				while ((c = fgetc(inf)) != EOF)
-					fputc(c, outf);
-			}
-			if (inf != NULL)
-				fclose(inf);
-			if (outf != NULL)
-				fclose(outf);
 		}
 		PTHREAD_RWLOCK_UNLOCK(&lock);
 	}
@@ -327,7 +340,7 @@ char *strdup(const char *s)
 	void *ret;
 	void *caller;
 	size_t size;
-	
+
 	no_hook = 1;
 	size = strlen(s) + 1;
 	caller = RETURN_ADDRESS(0);
@@ -344,7 +357,7 @@ char *strndup(const char *s, size_t n)
 	void *ret;
 	void *caller;
 	size_t size;
-	
+
 	no_hook = 1;
 	size = strnlen(s, n) + 1;
 	caller = RETURN_ADDRESS(0);
