@@ -274,6 +274,26 @@ void *realloc(void *old, size_t len)
 	return ret;
 }
 
+void *reallocarray(void *old, size_t nmemb, size_t size)
+{
+	void *ret;
+	void *caller;
+	size_t len = nmemb * size;
+
+	if (no_hook)
+		return (*reallocp)(old, len);
+
+	no_hook = 1;
+	caller = RETURN_ADDRESS(0);
+	if (old != NULL)
+		Log(OP_FREE, old, caller, 0);
+	ret = (*reallocp)(old, len);
+	Log(OP_ALLOC, ret, caller, len);
+	no_hook = 0;
+
+	return ret;
+}
+
 int posix_memalign(void **memptr, size_t alignment, size_t size)
 {
 	int ret;
@@ -307,6 +327,61 @@ void *aligned_alloc(size_t alignment, size_t size)
 	no_hook = 0;
 
 	return ret;
+}
+
+void *memalign(size_t alignment, size_t size)
+{
+	int ret;
+	void *memptr;
+	void *caller;
+
+	no_hook = 1;
+	caller = RETURN_ADDRESS(0);
+	ret = (*posix_memalignp)(&memptr, alignment, size);
+	if (ret == 0)
+		Log(OP_ALLOC, memptr, caller, size);
+	else
+		memptr = NULL;
+	no_hook = 0;
+	return memptr;
+}
+
+void *valloc(size_t size)
+{
+	int ret;
+	void *memptr;
+	void *caller;
+	size_t alignment = sysconf(_SC_PAGESIZE);
+
+	no_hook = 1;
+	caller = RETURN_ADDRESS(0);
+	ret = (*posix_memalignp)(&memptr, alignment, size);
+	if (ret == 0)
+		Log(OP_ALLOC, memptr, caller, size);
+	else
+		memptr = NULL;
+	no_hook = 0;
+	return memptr;
+}
+
+#define roundup(x, y)  ((((x) + (y) - 1)/(y))*(y))
+void *pvalloc(size_t size)
+{
+	int ret;
+	void *memptr;
+	void *caller;
+	size_t alignment = sysconf(_SC_PAGESIZE); /* page aligned */
+	size_t new_size = roundup(size, alignment); /* multiple of a page */
+
+	no_hook = 1;
+	caller = RETURN_ADDRESS(0);
+	ret = (*posix_memalignp)(&memptr, alignment, new_size);
+	if (ret == 0)
+		Log(OP_ALLOC, memptr, caller, size);
+	else
+		memptr = NULL;
+	no_hook = 0;
+	return memptr;
 }
 
 /* Check if the given ptr falls into my_buffer memory */
