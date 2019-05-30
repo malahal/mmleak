@@ -21,6 +21,42 @@
 #include <syslog.h>
 #include <errno.h>
 
+#define PTHREAD_RWLOCK_INIT(_mtx, _attr) \
+	do { \
+		if (pthread_rwlock_init(_mtx, _attr)) \
+			abort(); \
+	} while (0)
+
+#define PTHREAD_RWLOCK_WRLOCK(_mtx) \
+	do { \
+		if (pthread_rwlock_wrlock(_mtx)) \
+			abort(); \
+	} while (0)
+
+#define PTHREAD_RWLOCK_RDLOCK(_mtx) \
+	do { \
+		if (pthread_rwlock_rdlock(_mtx)) \
+			abort(); \
+	} while (0)
+
+#define PTHREAD_RWLOCK_UNLOCK(_mtx) \
+	do { \
+		if (pthread_rwlock_unlock(_mtx)) \
+			abort(); \
+	} while (0)
+
+#define PTHREAD_RWLOCK_DESTROY(_mtx) \
+	do { \
+		if (pthread_rwlock_destroy(_mtx)) \
+			abort(); \
+	} while (0)
+
+#define RETURN_ADDRESS(nr) \
+	__builtin_extract_return_addr(__builtin_return_address (nr))
+
+#define OP_ALLOC 1
+#define OP_FREE  2
+
 /* GCC version 40700 supports atomic functions. Check compiler
  * version and #error if needed, later
  */
@@ -33,9 +69,7 @@ static inline int64_t atomic_dec_int64_t(int64_t *var)
 	return __atomic_sub_fetch(var, 1, __ATOMIC_SEQ_CST);
 }
 
-#define RETURN_ADDRESS(nr) \
-	__builtin_extract_return_addr(__builtin_return_address (nr))
-
+/* Globals */
 static void * (*mallocp)(size_t);
 static void * (*callocp)(size_t, size_t);
 static void * (*reallocp)(void *, size_t);
@@ -45,9 +79,44 @@ static void   (*freep)(void *);
 
 static char *mmleak_dir;
 static char logfile[1024];
+static char hostname[64+1];
 
-static void __attribute__((constructor)) init(void)
+/* Thread specific */
+static __thread int no_hook;
+
+/* Initialize the following atfork() as well */
+static int64_t nrecs = 0; /* current record number in the file */
+static int file_num = 0; /* current file number */
+static pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
+static FILE *logfp = NULL;
+
+static void atfork_child(void)
 {
+	nrecs = 0;
+	file_num = 0;
+	no_hook = 1;
+	PTHREAD_RWLOCK_DESTROY(&lock);
+	PTHREAD_RWLOCK_INIT(&lock, NULL);
+	if (logfp) {
+		fclose(logfp);
+	}
+
+	snprintf(logfile, sizeof(logfile),
+		 "%s/mmleak-%s.%d.pid", mmleak_dir, hostname, getpid());
+	logfp = fopen(logfile, "w");
+	if (logfp == NULL) {
+		syslog(LOG_DAEMON|LOG_ERR,
+		       "open of logfile %s failed, errno:%d\n",
+		       logfile, errno);
+	}
+	pthread_atfork(NULL, NULL, atfork_child);
+	no_hook = 0;
+}
+
+static void __attribute__((constructor)) mmleak_ctor(void)
+{
+	int rc;
+
 	mallocp = (void *(*)(size_t))dlsym(RTLD_NEXT, "malloc");
 	callocp = (void *(*)(size_t, size_t)) dlsym (RTLD_NEXT, "calloc");
 	reallocp = (void *(*)(void *, size_t))dlsym(RTLD_NEXT, "realloc");
@@ -60,28 +129,24 @@ static void __attribute__((constructor)) init(void)
 	mmleak_dir = getenv("MMLEAK_DIR");
 	if (mmleak_dir == NULL)
 		mmleak_dir = "/tmp";
+	rc = gethostname(hostname, sizeof(hostname));
+	if (rc == -1)
+		hostname[0] = '\0';
+	else
+		hostname[sizeof(hostname)] = '\0';
+
+	no_hook = 1;
 	snprintf(logfile, sizeof(logfile),
-		 "%s/mmleak.out", mmleak_dir);
+		 "%s/mmleak-%s.%d.pid", mmleak_dir, hostname, getpid());
+	logfp = fopen(logfile, "w");
+	if (logfp == NULL) {
+		syslog(LOG_DAEMON|LOG_ERR,
+		       "open of logfile %s failed, errno:%d\n",
+		       logfile, errno);
+	}
+	pthread_atfork(NULL, NULL, atfork_child);
+	no_hook = 0;
 }
-
-#define OP_ALLOC 1
-#define OP_FREE  2
-
-#define PTHREAD_RWLOCK_WRLOCK(x) \
-	do { \
-		if (pthread_rwlock_wrlock(x)) \
-			abort(); \
-	} while (0)
-#define PTHREAD_RWLOCK_RDLOCK(x) \
-	do { \
-		if (pthread_rwlock_rdlock(x)) \
-			abort(); \
-	} while (0)
-#define PTHREAD_RWLOCK_UNLOCK(x) \
-	do { \
-		if (pthread_rwlock_unlock(x)) \
-			abort(); \
-	} while (0)
 
 /* caller should serialize this function */
 static void save_maps_file()
@@ -91,8 +156,8 @@ static void save_maps_file()
 	FILE *outf;
 	int c;
 
-	snprintf(fname, sizeof(fname), "%s/mmleak.%d.maps",
-		 mmleak_dir, getpid());
+	snprintf(fname, sizeof(fname), "%s/mmleak-%s.%d.maps",
+		 mmleak_dir, hostname, getpid());
 
 	if (access(fname, F_OK) != -1) /* File already exists */
 		return;
@@ -122,11 +187,10 @@ static void save_maps_file()
 /* caller should serialize this function */
 static void rename_dump_file()
 {
-	static int file_num = 0; /* current file numebr */
 	char fname[1024];
 
-	snprintf(fname, sizeof(fname), "%s/mmleak.%d.%d.out",
-		 mmleak_dir, getpid(), file_num);
+	snprintf(fname, sizeof(fname), "%s/mmleak-%s.%d.%d.out",
+		 mmleak_dir, hostname, getpid(), file_num);
 	file_num++;
 
 	if (rename(logfile, fname)) {
@@ -138,18 +202,13 @@ static void rename_dump_file()
 
 static void Log(int op, void *ptr, void *caller, size_t len)
 {
-	static FILE *logfp = NULL;
 	static const int64_t max_recs = 100 * 1024 * 1024;
-	static int64_t nrecs = 0; /* current record number in the file */
-	static pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
 
-	if (atomic_inc_int64_t(&nrecs) % max_recs == 1) {
+	if (atomic_inc_int64_t(&nrecs) % max_recs == 0) {
 		PTHREAD_RWLOCK_WRLOCK(&lock);
-		if (logfp) {
-			fclose(logfp);
-			rename_dump_file();
-			save_maps_file();
-		}
+		fclose(logfp);
+		rename_dump_file();
+		save_maps_file();
 
 		logfp = fopen(logfile, "w");
 		if (logfp == NULL) {
@@ -160,16 +219,9 @@ static void Log(int op, void *ptr, void *caller, size_t len)
 		PTHREAD_RWLOCK_UNLOCK(&lock);
 	}
 
-	/* If multiple threads call this function at the same time for
-	 * the first time, logfile may not have been opened! Unlikely to
-	 * happen though!  Will happens after a failure like ENOSPC as
-	 * well!
-	 */
-	if (logfp == NULL)
-		return;
-
-	/* fprintf is thread safe, so no need for any lock.  This shared
-	 * lock is needed here to avoid threads writing to a closed logfp!
+	/* fprintf is thread safe, so no need for any lock. This shared
+	 * lock is needed here to avoid threads writing to a closed
+	 * logfp!
 	 */
 	PTHREAD_RWLOCK_RDLOCK(&lock);
 	switch (op) {
@@ -213,7 +265,6 @@ static void *my_calloc(size_t n, size_t len)
 	return ret;
 }
 
-static __thread int no_hook;
 
 void *malloc (size_t len)
 {
@@ -442,4 +493,10 @@ char *strndup(const char *s, size_t n)
 	no_hook = 0;
 
 	return ret;
+}
+
+static void __attribute__((destructor)) mmleak_dtor(void)
+{
+	rename_dump_file();
+	save_maps_file();
 }
