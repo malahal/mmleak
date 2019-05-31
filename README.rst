@@ -26,27 +26,29 @@ Steps to track memory leak
 #. cd mmleak && make
 #. Put the above generated "mmleak.so" library in /root
 #. Use "LD_PRELOAD=/root/mmleak.so <your-program> [program-options]" to
-   start your application. You can use "MMLEAK_DIR=/what/ever/path" env
-   to place the dump files into the given directory.
-#. mmleak.so will generate dump files into /tmp with /tmp/mmleak.<PID>.<NUM>.out
+   start your application. You can optionally use
+   "MMLEAK_DIR=/what/ever/path" env to place the dump files into the
+   given directory.
+#. mmleak.so will generate dump files into /tmp (by default) with /tmp/mmleak-<HOSTNAME>.<PID>.<NUM>.out
 #. The files generated will be big as it dumps all allocations and
    frees. Use mmleak.py to shrink the matching allocations and frees
-   as below:
+   as below (**note that files with .pid extension are active dump
+   files in use, please don't modify or use them**):
 
        - For each dumpfile::
 
           sort -s -k1,1 <dump-file> | mmleak.py > <dump-file>.shrinked
 
-       - cat <all shrinked files in order> | sort -s -k1,1 | mmleak.py > mmleak.<PID>.txt
+       - cat <all shrinked files in order> | sort -s -k1,1 | mmleak.py > mmleak-<HOSTNAME>.<PID>.txt
 
-       - You can feed mmleak.<PID>.txt through mmleak-panda script to get
+       - You can feed mmleak-<HOSTNAME>.<PID>.txt through mmleak-panda.py script to get
          an HTML output::
 
-          awk 'NF==3' mmleak.<PID>.txt | mmleak-panda.py > mmleak.<PID>.html
+          awk 'NF==3' mmleak-<HOSTNAME>.<PID>.txt | mmleak-panda.py > mmleak-<HOSTNAME>.<PID>.html
 
-#. mmleak.so will also save /proc/<PID>/maps file as /tmp/mmleak.<PID>.maps.
+#. mmleak.so will also save /proc/<PID>/maps file as /tmp/mmleak-<HOSTNAME>.<PID>.maps.
    You need this to translate hex addresses to source line numbers.
    All function addresses will be in hex. Use "eu-addr2line" to get the
    leak line numbers::
 
-     eu-addr2line -M mmleak.<PID>.maps addr1 [addr2 ...]
+     eu-addr2line -M mmleak-<HOSTNAME>.<PID>.maps addr1 [addr2 ...]
