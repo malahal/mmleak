@@ -117,6 +117,7 @@ static void __attribute__((constructor)) mmleak_ctor(void)
 {
 	int rc;
 
+	no_hook = 1;
 	mallocp = (void *(*)(size_t))dlsym(RTLD_NEXT, "malloc");
 	callocp = (void *(*)(size_t, size_t)) dlsym (RTLD_NEXT, "calloc");
 	reallocp = (void *(*)(void *, size_t))dlsym(RTLD_NEXT, "realloc");
@@ -135,7 +136,6 @@ static void __attribute__((constructor)) mmleak_ctor(void)
 	else
 		hostname[sizeof(hostname)] = '\0';
 
-	no_hook = 1;
 	snprintf(logfile, sizeof(logfile),
 		 "%s/mmleak-%s.%d.pid", mmleak_dir, hostname, getpid());
 	logfp = fopen(logfile, "w");
@@ -497,6 +497,8 @@ char *strndup(const char *s, size_t n)
 
 static void __attribute__((destructor)) mmleak_dtor(void)
 {
+	no_hook = 1;
 	rename_dump_file();
 	save_maps_file();
+	no_hook = 0;
 }
