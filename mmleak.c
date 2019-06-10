@@ -247,7 +247,9 @@ static void *my_malloc(size_t len)
 	/* mallocs should be on 8 byte boundary */
 	len = ((len+7)/8) * 8;
 	ret = (void *)next_alloc;
-	next_alloc += len;
+	*(size_t *)ret = len;
+	ret += sizeof(size_t);
+	next_alloc += len + sizeof(size_t);
 
 	if (next_alloc > my_buffer + sizeof(my_buffer)) {
 		abort();
@@ -265,6 +267,27 @@ static void *my_calloc(size_t n, size_t len)
 	return ret;
 }
 
+static void *my_realloc(void *old, size_t len)
+{
+	void *ret;
+	size_t old_size;
+	size_t min;
+
+	/* We don't have a free function */
+	if (len == 0) {
+		return NULL;
+	}
+
+	/* We always do a fresh allocation */
+	ret = my_malloc(len);
+	if (old != NULL) {
+		old_size = *(size_t *) ((char *)old - sizeof(size_t));
+		min = (old_size < len) ? old_size : len;
+		memcpy(ret, old, min);
+	}
+
+	return ret;
+}
 
 void *malloc (size_t len)
 {
@@ -310,6 +333,10 @@ void *realloc(void *old, size_t len)
 {
 	void *ret;
 	void *caller;
+
+	/* numactl dumps us here! */
+	if (reallocp == NULL)
+		return my_realloc(old, len);
 
 	if (no_hook)
 		return (*reallocp)(old, len);
