@@ -26,14 +26,16 @@ def shrink(inf, outf):
 
         if alloc:
             if ptr in adict:
-                sys.exit("twice allocated: %s %s %s" % (ptr, func, size))
+                pass
+                #sys.stderr("twice allocated: %s %s %s" % (ptr, func, size))
             adict[ptr] = (func, size)
         else:
             if ptr in adict:
                 del adict[ptr]
             else:
                 if ptr in fdict:
-                    sys.exit("twice freed: %s %s" % (ptr, func))
+                    pass
+                    #sys.stderr("twice freed: %s %s" % (ptr, func))
                 fdict[ptr] = func
 
     # Write out free dict first, and then allocation dict */
