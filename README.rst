@@ -31,17 +31,17 @@ Steps to track memory leak
    given directory.
 #. mmleak.so will generate dump files into /tmp (by default) with /tmp/mmleak-<HOSTNAME>.<PID>.<NUM>.out
 #. The files generated will be big as it dumps all allocations and
-   frees. Use sort and mmleak.py to remove the matching allocations and
+   frees. Use mmleak-shrink.py to remove the matching allocations and
    frees as below (**note that files with .pid extension are active dump
    files in use, please don't modify or use them**):
 
     - Shrink dump files::
 
-        for i in mmleak*.out; do if [ ! -s $i.shrinked ]; then echo $i; sort -s -k1,1 $i | mmleak.py > $i.shrinked; fi; done
+        for i in mmleak*.out; do if [ ! -s $i.shrinked ]; then echo $i; mmleak-shrink.py < $i > $i.shrinked; fi; done
 
     - Merge all shrunken files in order and shrink the resultant file::
 
-        cat $(ls -v mmleak*.shrinked) | sort -s -k1,1 | mmleak.py > mmleak-<HOSTNAME>.<PID>.txt
+        cat $(ls -v mmleak*.shrinked) | mmleak-shrink.py > mmleak-<HOSTNAME>.<PID>.txt
 
     - Feed mmleak-<HOSTNAME>.<PID>.txt through mmleak-panda.py script to get
       an HTML output with top allocators::
