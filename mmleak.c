@@ -13,6 +13,7 @@
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <dlfcn.h>
 #include <string.h>
 #include <sys/types.h>
@@ -81,12 +82,22 @@ static char *mmleak_dir;
 static char logfile[1024];
 static char hostname[64+1];
 
-/* Thread specific */
+/* dlsym_path is set to true when we call dl_sym() to get underlying real
+ * malloc/free family function addresses. We use a static buffer to do
+ * allocations in this path with my_malloc().
+ */
+static __thread int dlsym_path;
+
+/* no_hook is set to true when we don't want to trace allocations/frees, so we
+ * directly call the underlying real malloc/free function. This is set to true
+ * while tracing application malloc/free to avoid malloc/free from the tracing
+ * code itself to recursively going into tracing!
+ */
 static __thread int no_hook;
 
 /* Initialize the following atfork() as well */
 static int64_t nrecs = 0; /* current record number in the file */
-static int file_num = 0; /* current file number */
+static int file_num = 0;  /* current file number */
 static pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
 static FILE *logfp = NULL;
 
@@ -94,7 +105,7 @@ static void atfork_child(void)
 {
 	nrecs = 0;
 	file_num = 0;
-	no_hook = 1;
+	no_hook = true;
 	PTHREAD_RWLOCK_DESTROY(&lock);
 	PTHREAD_RWLOCK_INIT(&lock, NULL);
 	if (logfp) {
@@ -110,14 +121,14 @@ static void atfork_child(void)
 		       logfile, errno);
 	}
 	pthread_atfork(NULL, NULL, atfork_child);
-	no_hook = 0;
+	no_hook = false;
 }
 
-static void __attribute__((constructor)) mmleak_ctor(void)
+static void mmleak_ctor(void)
 {
 	int rc;
 
-	no_hook = 1;
+	dlsym_path = true;
 	mallocp = (void *(*)(size_t))dlsym(RTLD_NEXT, "malloc");
 	callocp = (void *(*)(size_t, size_t)) dlsym (RTLD_NEXT, "calloc");
 	reallocp = (void *(*)(void *, size_t))dlsym(RTLD_NEXT, "realloc");
@@ -126,7 +137,9 @@ static void __attribute__((constructor)) mmleak_ctor(void)
 	aligned_allocp = (void *(*)(size_t, size_t))
 				dlsym(RTLD_NEXT, "aligned_alloc");
 	freep = (void (*)(void *))dlsym(RTLD_NEXT, "free");
+	dlsym_path = false;
 
+	no_hook = true;
 	mmleak_dir = getenv("MMLEAK_DIR");
 	if (mmleak_dir == NULL)
 		mmleak_dir = "/tmp";
@@ -145,7 +158,7 @@ static void __attribute__((constructor)) mmleak_ctor(void)
 		       logfile, errno);
 	}
 	pthread_atfork(NULL, NULL, atfork_child);
-	no_hook = 0;
+	no_hook = false;
 }
 
 /* caller should serialize this function */
@@ -294,17 +307,20 @@ void *malloc (size_t len)
 	void *ret;
 	void *caller;
 
-	if (mallocp == NULL)
+	if (dlsym_path)
 		return my_malloc(len);
+
+	if (mallocp == NULL)
+		mmleak_ctor();
 
 	if (no_hook)
 		return (*mallocp)(len);
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	ret = (*mallocp)(len);
 	Log(OP_ALLOC, ret, caller, len);
-	no_hook = 0;
+	no_hook = false;
 
 	return ret;
 }
@@ -314,17 +330,20 @@ void *calloc(size_t n, size_t len)
 	void *ret;
 	void *caller;
 
-	if (callocp == NULL)
+	if (dlsym_path)
 		return my_calloc(n, len);
+
+	if (callocp == NULL)
+		mmleak_ctor();
 
 	if (no_hook)
 		return (*callocp)(n, len);
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	ret = (*callocp)(n, len);
 	Log(OP_ALLOC, ret, caller, n * len);
-	no_hook = 0;
+	no_hook = false;
 
 	return ret;
 }
@@ -334,20 +353,22 @@ void *realloc(void *old, size_t len)
 	void *ret;
 	void *caller;
 
-	/* numactl dumps us here! */
-	if (reallocp == NULL)
+	if (dlsym_path)
 		return my_realloc(old, len);
+
+	if (reallocp == NULL)
+		mmleak_ctor();
 
 	if (no_hook)
 		return (*reallocp)(old, len);
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	if (old != NULL)
 		Log(OP_FREE, old, caller, 0);
 	ret = (*reallocp)(old, len);
 	Log(OP_ALLOC, ret, caller, len);
-	no_hook = 0;
+	no_hook = false;
 
 	return ret;
 }
@@ -361,13 +382,13 @@ void *reallocarray(void *old, size_t nmemb, size_t size)
 	if (no_hook)
 		return (*reallocp)(old, len);
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	if (old != NULL)
 		Log(OP_FREE, old, caller, 0);
 	ret = (*reallocp)(old, len);
 	Log(OP_ALLOC, ret, caller, len);
-	no_hook = 0;
+	no_hook = false;
 
 	return ret;
 }
@@ -380,12 +401,12 @@ int posix_memalign(void **memptr, size_t alignment, size_t size)
 	if (no_hook)
 		return (*posix_memalignp)(memptr, alignment, size);
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	ret = (*posix_memalignp)(memptr, alignment, size);
 	if (ret == 0)
 		Log(OP_ALLOC, *memptr, caller, size);
-	no_hook = 0;
+	no_hook = false;
 
 	return ret;
 }
@@ -398,11 +419,11 @@ void *aligned_alloc(size_t alignment, size_t size)
 	if (no_hook)
 		return (*aligned_allocp)(alignment, size);
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	ret = (*aligned_allocp)(alignment, size);
 	Log(OP_ALLOC, ret, caller, size);
-	no_hook = 0;
+	no_hook = false;
 
 	return ret;
 }
@@ -413,14 +434,14 @@ void *memalign(size_t alignment, size_t size)
 	void *memptr;
 	void *caller;
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	ret = (*posix_memalignp)(&memptr, alignment, size);
 	if (ret == 0)
 		Log(OP_ALLOC, memptr, caller, size);
 	else
 		memptr = NULL;
-	no_hook = 0;
+	no_hook = false;
 	return memptr;
 }
 
@@ -431,14 +452,14 @@ void *valloc(size_t size)
 	void *caller;
 	size_t alignment = sysconf(_SC_PAGESIZE);
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	ret = (*posix_memalignp)(&memptr, alignment, size);
 	if (ret == 0)
 		Log(OP_ALLOC, memptr, caller, size);
 	else
 		memptr = NULL;
-	no_hook = 0;
+	no_hook = false;
 	return memptr;
 }
 
@@ -451,14 +472,14 @@ void *pvalloc(size_t size)
 	size_t alignment = sysconf(_SC_PAGESIZE); /* page aligned */
 	size_t new_size = roundup(size, alignment); /* multiple of a page */
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	ret = (*posix_memalignp)(&memptr, alignment, new_size);
 	if (ret == 0)
 		Log(OP_ALLOC, memptr, caller, size);
 	else
 		memptr = NULL;
-	no_hook = 0;
+	no_hook = false;
 	return memptr;
 }
 
@@ -481,11 +502,11 @@ void free(void *ptr)
 		return;
 	}
 
-	no_hook = 1;
+	no_hook = true;
 	caller = RETURN_ADDRESS(0);
 	Log(OP_FREE, ptr, caller, 0);
 	(*freep)(ptr);
-	no_hook = 0;
+	no_hook = false;
 }
 
 char *strdup(const char *s)
@@ -524,8 +545,8 @@ char *strndup(const char *s, size_t n)
 
 static void __attribute__((destructor)) mmleak_dtor(void)
 {
-	no_hook = 1;
+	no_hook = true;
 	rename_dump_file();
 	save_maps_file();
-	no_hook = 0;
+	no_hook = false;
 }
