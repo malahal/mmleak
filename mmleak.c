@@ -86,7 +86,7 @@ static char hostname[64+1];
  * malloc/free family function addresses. We use a static buffer to do
  * allocations in this path with my_malloc().
  */
-static __thread int dlsym_path;
+static int dlsym_path;
 
 /* no_hook is set to true when we don't want to trace allocations/frees, so we
  * directly call the underlying real malloc/free function. This is set to true
@@ -120,7 +120,6 @@ static void atfork_child(void)
 		       "open of logfile %s failed, errno:%d\n",
 		       logfile, errno);
 	}
-	pthread_atfork(NULL, NULL, atfork_child);
 	no_hook = false;
 }
 
